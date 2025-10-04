@@ -31,6 +31,88 @@
 }
 
 
+- (NSDictionary *)dictionaryForUser:(GIDGoogleUser *)user idToken:(NSString *)idToken
+{
+    NSString *email = user.profile.email;
+    NSString *userId = user.userID;
+    NSURL *imageUrl = [user.profile imageURLWithDimension:120]; // TODO pass in img size as param, and try to sync with Android
+
+    return @{
+        @"email"      : email ?: [NSNull null],
+        @"userId"     : userId ?: [NSNull null],
+        @"idToken"    : idToken ?: [NSNull null],
+        @"displayName": user.profile.name       ? : [NSNull null],
+        @"givenName"  : user.profile.givenName  ? : [NSNull null],
+        @"familyName" : user.profile.familyName ? : [NSNull null],
+        @"imageUrl"   : imageUrl ? imageUrl.absoluteString : [NSNull null],
+    };
+}
+
+- (void)sendPluginResultWithUser:(GIDGoogleUser *)user
+                           error:(NSError *)error
+{
+    if (error) {
+        CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:error.localizedDescription];
+        [self.commandDelegate sendPluginResult:pluginResult callbackId:self->_callbackId];
+        return;
+    }
+
+    if (!user) {
+        CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"User information not available."];
+        [self.commandDelegate sendPluginResult:pluginResult callbackId:self->_callbackId];
+        return;
+    }
+
+    NSString *idToken = nil;
+
+    SEL idTokenSelector = NSSelectorFromString(@"idToken");
+    if ([user respondsToSelector:idTokenSelector]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+        id tokenObject = [user performSelector:idTokenSelector];
+#pragma clang diagnostic pop
+
+        SEL tokenStringSelector = NSSelectorFromString(@"tokenString");
+        if ([tokenObject respondsToSelector:tokenStringSelector]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            id tokenString = [tokenObject performSelector:tokenStringSelector];
+#pragma clang diagnostic pop
+            if ([tokenString isKindOfClass:[NSString class]]) {
+                idToken = (NSString *)tokenString;
+            }
+        } else if ([tokenObject isKindOfClass:[NSString class]]) {
+            idToken = (NSString *)tokenObject;
+        }
+    }
+
+    if (idToken == nil) {
+        SEL authenticationSelector = NSSelectorFromString(@"authentication");
+        if ([user respondsToSelector:authenticationSelector]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            id authentication = [user performSelector:authenticationSelector];
+#pragma clang diagnostic pop
+
+            SEL legacyTokenSelector = NSSelectorFromString(@"idToken");
+            if ([authentication respondsToSelector:legacyTokenSelector]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                id legacyToken = [authentication performSelector:legacyTokenSelector];
+#pragma clang diagnostic pop
+                if ([legacyToken isKindOfClass:[NSString class]]) {
+                    idToken = (NSString *)legacyToken;
+                }
+            }
+        }
+    }
+
+    NSDictionary *result = [self dictionaryForUser:user idToken:idToken];
+
+    CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:result];
+    [self.commandDelegate sendPluginResult:pluginResult callbackId:self->_callbackId];
+}
+
 - (void) login:(CDVInvokedUrlCommand*)command {
     _callbackId = command.callbackId;
     NSDictionary* options = command.arguments[0];
@@ -57,28 +139,41 @@
 
     GIDSignIn *signIn = GIDSignIn.sharedInstance;
 
-    [signIn signInWithConfiguration:config presentingViewController:self.viewController callback:^(GIDGoogleUser * _Nullable user, NSError * _Nullable error) {
-        if (error) {
-            CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:error.localizedDescription];
-            [self.commandDelegate sendPluginResult:pluginResult callbackId:self->_callbackId];
-        } else {
-            NSString *email = user.profile.email;
-            NSString *userId = user.userID;
-            NSURL *imageUrl = [user.profile imageURLWithDimension:120]; // TODO pass in img size as param, and try to sync with Android
-            NSDictionary *result = @{
-                           @"email"           : email,
-                           @"userId"          : userId,
-                           @"idToken"         : user.authentication.idToken,
-                           @"displayName"     : user.profile.name       ? : [NSNull null],
-                           @"givenName"       : user.profile.givenName  ? : [NSNull null],
-                           @"familyName"      : user.profile.familyName ? : [NSNull null],
-                           @"imageUrl"        : imageUrl ? imageUrl.absoluteString : [NSNull null],
-                           };
+    SEL modernSignInSelector = NSSelectorFromString(@"signInWithConfiguration:presentingViewController:completion:");
+    if ([signIn respondsToSelector:modernSignInSelector]) {
+        void (^completion)(id _Nullable, NSError * _Nullable) = ^(id _Nullable signInResult, NSError * _Nullable error) {
+            GIDGoogleUser *user = nil;
+            if ([signInResult respondsToSelector:@selector(user)]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                id possibleUser = [signInResult performSelector:@selector(user)];
+#pragma clang diagnostic pop
+                if ([possibleUser isKindOfClass:[GIDGoogleUser class]]) {
+                    user = (GIDGoogleUser *)possibleUser;
+                }
+            } else if ([signInResult isKindOfClass:[GIDGoogleUser class]]) {
+                user = (GIDGoogleUser *)signInResult;
+            }
 
-            CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:result];
-            [self.commandDelegate sendPluginResult:pluginResult callbackId:self->_callbackId];
+            [self sendPluginResultWithUser:user error:error];
+        };
+
+        typedef void (*SignInWithCompletionType)(id, SEL, GIDConfiguration *, UIViewController *, void (^)(id _Nullable, NSError * _Nullable));
+        SignInWithCompletionType implementation = (SignInWithCompletionType)[signIn methodForSelector:modernSignInSelector];
+        implementation(signIn, modernSignInSelector, config, self.viewController, completion);
+    } else {
+        SEL legacySignInSelector = NSSelectorFromString(@"signInWithConfiguration:presentingViewController:callback:");
+        if ([signIn respondsToSelector:legacySignInSelector]) {
+            typedef void (*SignInWithCallbackType)(id, SEL, GIDConfiguration *, UIViewController *, void (^)(GIDGoogleUser * _Nullable, NSError * _Nullable));
+            SignInWithCallbackType implementation = (SignInWithCallbackType)[signIn methodForSelector:legacySignInSelector];
+            implementation(signIn, legacySignInSelector, config, self.viewController, ^(GIDGoogleUser * _Nullable user, NSError * _Nullable error) {
+                [self sendPluginResultWithUser:user error:error];
+            });
+        } else {
+            NSError *unsupportedError = [NSError errorWithDomain:@"GooglePlus" code:-1 userInfo:@{NSLocalizedDescriptionKey: @"Google Sign-In API unsupported on this version."}];
+            [self sendPluginResultWithUser:nil error:unsupportedError];
         }
-    }];
+    }
 }
 
 
@@ -113,15 +208,43 @@
 }
 
 - (void) disconnect:(CDVInvokedUrlCommand*)command {
-    [GIDSignIn.sharedInstance disconnectWithCallback:^(NSError * _Nullable error) {
-        if(error == nil) {
+    GIDSignIn *signIn = GIDSignIn.sharedInstance;
+
+    void (^handleResult)(NSError * _Nullable) = ^(NSError * _Nullable error) {
+        if (error == nil) {
             CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsString:@"disconnected"];
             [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
         } else {
             CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:[error localizedDescription]];
             [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
         }
-    }];
+    };
+
+    SEL modernDisconnectSelector = NSSelectorFromString(@"disconnectWithCompletion:");
+    if ([signIn respondsToSelector:modernDisconnectSelector]) {
+        typedef void (*DisconnectWithCompletionType)(id, SEL, void (^ _Nullable)(NSError * _Nullable));
+        DisconnectWithCompletionType implementation = (DisconnectWithCompletionType)[signIn methodForSelector:modernDisconnectSelector];
+        implementation(signIn, modernDisconnectSelector, ^(NSError * _Nullable error) {
+            handleResult(error);
+        });
+    } else {
+        SEL legacyDisconnectSelector = NSSelectorFromString(@"disconnectWithCallback:");
+        if ([signIn respondsToSelector:legacyDisconnectSelector]) {
+            typedef void (*DisconnectWithCallbackType)(id, SEL, void (^ _Nullable)(NSError * _Nullable));
+            DisconnectWithCallbackType implementation = (DisconnectWithCallbackType)[signIn methodForSelector:legacyDisconnectSelector];
+            implementation(signIn, legacyDisconnectSelector, ^(NSError * _Nullable error) {
+                handleResult(error);
+            });
+        } else if ([signIn respondsToSelector:@selector(disconnect)]) {
+            typedef void (*DisconnectVoidType)(id, SEL);
+            DisconnectVoidType implementation = (DisconnectVoidType)[signIn methodForSelector:@selector(disconnect)];
+            implementation(signIn, @selector(disconnect));
+            handleResult(nil);
+        } else {
+            NSError *unsupportedError = [NSError errorWithDomain:@"GooglePlus" code:-1 userInfo:@{NSLocalizedDescriptionKey: @"Disconnect API unsupported on this version."}];
+            handleResult(unsupportedError);
+        }
+    }
 }
 
 - (void) isSignedIn:(CDVInvokedUrlCommand*)command {
