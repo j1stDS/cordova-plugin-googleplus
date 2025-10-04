@@ -2,6 +2,10 @@
 #import "objc/runtime.h"
 #import "GooglePlus.h"
 
+#if __has_include(<GoogleSignIn/GIDSignInResult.h>)
+#import <GoogleSignIn/GIDSignInResult.h>
+#endif
+
 @implementation GooglePlus
 
 - (void)pluginInitialize
@@ -31,6 +35,56 @@
 }
 
 
+- (NSDictionary *)dictionaryForUser:(GIDGoogleUser *)user idToken:(NSString *)idToken
+{
+    NSString *email = user.profile.email;
+    NSString *userId = user.userID;
+    NSURL *imageUrl = [user.profile imageURLWithDimension:120]; // TODO pass in img size as param, and try to sync with Android
+
+    return @{
+        @"email"      : email ?: [NSNull null],
+        @"userId"     : userId ?: [NSNull null],
+        @"idToken"    : idToken ?: [NSNull null],
+        @"displayName": user.profile.name       ? : [NSNull null],
+        @"givenName"  : user.profile.givenName  ? : [NSNull null],
+        @"familyName" : user.profile.familyName ? : [NSNull null],
+        @"imageUrl"   : imageUrl ? imageUrl.absoluteString : [NSNull null],
+    };
+}
+
+- (void)sendPluginResultWithUser:(GIDGoogleUser *)user
+                           error:(NSError *)error
+{
+    if (error) {
+        CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:error.localizedDescription];
+        [self.commandDelegate sendPluginResult:pluginResult callbackId:self->_callbackId];
+        return;
+    }
+
+    if (!user) {
+        CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"User information not available."];
+        [self.commandDelegate sendPluginResult:pluginResult callbackId:self->_callbackId];
+        return;
+    }
+
+    NSString *idToken = nil;
+
+#if __has_include(<GoogleSignIn/GIDSignInResult.h>)
+    if ([user respondsToSelector:@selector(idToken)]) {
+        idToken = user.idToken.tokenString;
+    }
+#endif
+
+    if (idToken == nil && [user respondsToSelector:@selector(authentication)]) {
+        idToken = user.authentication.idToken;
+    }
+
+    NSDictionary *result = [self dictionaryForUser:user idToken:idToken];
+
+    CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:result];
+    [self.commandDelegate sendPluginResult:pluginResult callbackId:self->_callbackId];
+}
+
 - (void) login:(CDVInvokedUrlCommand*)command {
     _callbackId = command.callbackId;
     NSDictionary* options = command.arguments[0];
@@ -57,28 +111,15 @@
 
     GIDSignIn *signIn = GIDSignIn.sharedInstance;
 
-    [signIn signInWithConfiguration:config presentingViewController:self.viewController callback:^(GIDGoogleUser * _Nullable user, NSError * _Nullable error) {
-        if (error) {
-            CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:error.localizedDescription];
-            [self.commandDelegate sendPluginResult:pluginResult callbackId:self->_callbackId];
-        } else {
-            NSString *email = user.profile.email;
-            NSString *userId = user.userID;
-            NSURL *imageUrl = [user.profile imageURLWithDimension:120]; // TODO pass in img size as param, and try to sync with Android
-            NSDictionary *result = @{
-                           @"email"           : email,
-                           @"userId"          : userId,
-                           @"idToken"         : user.authentication.idToken,
-                           @"displayName"     : user.profile.name       ? : [NSNull null],
-                           @"givenName"       : user.profile.givenName  ? : [NSNull null],
-                           @"familyName"      : user.profile.familyName ? : [NSNull null],
-                           @"imageUrl"        : imageUrl ? imageUrl.absoluteString : [NSNull null],
-                           };
-
-            CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:result];
-            [self.commandDelegate sendPluginResult:pluginResult callbackId:self->_callbackId];
-        }
+#if __has_include(<GoogleSignIn/GIDSignInResult.h>)
+    [signIn signInWithConfiguration:config presentingViewController:self.viewController completion:^(GIDSignInResult * _Nullable signInResult, NSError * _Nullable error) {
+        [self sendPluginResultWithUser:signInResult.user error:error];
     }];
+#else
+    [signIn signInWithConfiguration:config presentingViewController:self.viewController callback:^(GIDGoogleUser * _Nullable user, NSError * _Nullable error) {
+        [self sendPluginResultWithUser:user error:error];
+    }];
+#endif
 }
 
 

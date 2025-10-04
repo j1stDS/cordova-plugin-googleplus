@@ -1,4 +1,5 @@
 #import <Cordova/CDVPlugin.h>
+// Rely on the umbrella GoogleSignIn header instead of importing GIDAuthentication directly.
 #import <GoogleSignIn/GoogleSignIn.h>
 
 @interface GooglePlus : CDVPlugin
