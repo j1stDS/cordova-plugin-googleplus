@@ -1,4 +1,5 @@
 #import "AppDelegate.h"
+#import "objc/message.h"
 #import "objc/runtime.h"
 #import "GooglePlus.h"
 
@@ -39,14 +40,14 @@
 }
 
 - (void) login:(CDVInvokedUrlCommand*)command {
-  [[self getGIDSignInObject:command] signIn];
+    [self startSignInWithCommand:command silently:NO];
 }
 
 /** Get Google Sign-In object
  @date July 19, 2015
  */
 - (void) trySilentLogin:(CDVInvokedUrlCommand*)command {
-    [[self getGIDSignInObject:command] restorePreviousSignIn];
+    [self startSignInWithCommand:command silently:YES];
 }
 
 /** Get Google Sign-In object
@@ -55,7 +56,7 @@
  */
 - (GIDSignIn*) getGIDSignInObject:(CDVInvokedUrlCommand*)command {
     _callbackId = command.callbackId;
-    NSDictionary* options = command.arguments[0];
+    NSDictionary* options = command.arguments.count > 0 ? command.arguments[0] : @{};
     NSString *reversedClientId = [self getreversedClientId];
 
     if (reversedClientId == nil) {
@@ -72,28 +73,41 @@
     BOOL offline = [options[@"offline"] boolValue];
     NSString* hostedDomain = options[@"hostedDomain"];
 
-
     GIDSignIn *signIn = [GIDSignIn sharedInstance];
-    signIn.clientID = clientId;
 
-    [signIn setLoginHint:loginHint];
-
-    if (serverClientId != nil && offline) {
-      signIn.serverClientID = serverClientId;
+    if ([signIn respondsToSelector:@selector(setClientID:)]) {
+        [signIn setClientID:clientId];
     }
 
-    if (hostedDomain != nil) {
-        signIn.hostedDomain = hostedDomain;
+    if ([signIn respondsToSelector:@selector(setServerClientID:)] && serverClientId != nil && offline) {
+        [signIn setServerClientID:serverClientId];
     }
 
-    signIn.presentingViewController = self.viewController;
-    signIn.delegate = self;
+    if (hostedDomain != nil && [signIn respondsToSelector:@selector(setHostedDomain:)]) {
+        [signIn setHostedDomain:hostedDomain];
+    }
 
-    // default scopes are email and profile
+    if ([signIn respondsToSelector:@selector(setLoginHint:)]) {
+        [signIn setLoginHint:loginHint];
+    }
+
+    if ([signIn respondsToSelector:@selector(setPresentingViewController:)]) {
+        [signIn setPresentingViewController:self.viewController];
+    }
+
+    if ([signIn respondsToSelector:@selector(setDelegate:)]) {
+        [signIn setDelegate:self];
+    }
+
     if (scopesString != nil) {
         NSArray* scopes = [scopesString componentsSeparatedByString:@" "];
-        [signIn setScopes:scopes];
+        if ([signIn respondsToSelector:@selector(setScopes:)]) {
+            [signIn setScopes:scopes];
+        }
     }
+
+    [self updateConfigurationWithSignIn:signIn clientId:clientId serverClientId:(serverClientId != nil && offline) ? serverClientId : nil hostedDomain:hostedDomain];
+
     return signIn;
 }
 
@@ -128,9 +142,27 @@
 }
 
 - (void) disconnect:(CDVInvokedUrlCommand*)command {
-  [[GIDSignIn sharedInstance] disconnect];
-  CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsString:@"disconnected"];
-  [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+    GIDSignIn *signIn = [GIDSignIn sharedInstance];
+    SEL disconnectSelector = NSSelectorFromString(@"disconnectWithCompletion:");
+
+    if ([signIn respondsToSelector:disconnectSelector]) {
+        void (^completionBlock)(NSError * _Nullable) = ^(NSError * _Nullable error) {
+            if (error) {
+                CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:error.localizedDescription];
+                [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+            } else {
+                CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsString:@"disconnected"];
+                [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+            }
+        };
+
+        void (^completionCopy)(NSError * _Nullable) = [completionBlock copy];
+        ((void (*)(id, SEL, void (^)(NSError * _Nullable)))[signIn methodForSelector:disconnectSelector])(signIn, disconnectSelector, completionCopy);
+    } else {
+        [signIn disconnect];
+        CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsString:@"disconnected"];
+        [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+    }
 }
 
 - (void) share_unused:(CDVInvokedUrlCommand*)command {
@@ -142,33 +174,7 @@
  @date July 19, 2015
  */
 - (void)signIn:(GIDSignIn *)signIn didSignInForUser:(GIDGoogleUser *)user withError:(NSError *)error {
-    if (error) {
-        CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:error.localizedDescription];
-        [self.commandDelegate sendPluginResult:pluginResult callbackId:_callbackId];
-    } else {
-        NSString *email = user.profile.email;
-        NSString *idToken = user.authentication.idToken;
-        NSString *accessToken = user.authentication.accessToken;
-        NSString *refreshToken = user.authentication.refreshToken;
-        NSString *userId = user.userID;
-        NSString *serverAuthCode = user.serverAuthCode != nil ? user.serverAuthCode : @"";
-        NSURL *imageUrl = [user.profile imageURLWithDimension:120]; // TODO pass in img size as param, and try to sync with Android
-        NSDictionary *result = @{
-                       @"email"           : email,
-                       @"idToken"         : idToken,
-                       @"serverAuthCode"  : serverAuthCode,
-                       @"accessToken"     : accessToken,
-                       @"refreshToken"    : refreshToken,
-                       @"userId"          : userId,
-                       @"displayName"     : user.profile.name       ? : [NSNull null],
-                       @"givenName"       : user.profile.givenName  ? : [NSNull null],
-                       @"familyName"      : user.profile.familyName ? : [NSNull null],
-                       @"imageUrl"        : imageUrl ? imageUrl.absoluteString : [NSNull null],
-                       };
-
-        CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:result];
-        [self.commandDelegate sendPluginResult:pluginResult callbackId:_callbackId];
-    }
+    [self handleSignInForUser:user error:error];
 }
 
 /** Google Sign-In SDK
@@ -184,6 +190,210 @@
  */
 - (void)signIn:(GIDSignIn *)signIn dismissViewController:(UIViewController *)viewController {
     [self.viewController dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)startSignInWithCommand:(CDVInvokedUrlCommand*)command silently:(BOOL)silently {
+    GIDSignIn *signIn = [self getGIDSignInObject:command];
+
+    if (signIn == nil) {
+        return;
+    }
+
+    NSDictionary* options = command.arguments.count > 0 ? command.arguments[0] : @{};
+    NSString *loginHint = options[@"loginHint"];
+
+    if (!silently) {
+        self.isSigningIn = YES;
+    }
+
+    if (silently) {
+        SEL restoreSelector = NSSelectorFromString(@"restorePreviousSignInWithCompletion:");
+        if ([signIn respondsToSelector:restoreSelector]) {
+            void (^completionBlock)(id, NSError *) = ^(id result, NSError *error) {
+                GIDGoogleUser *user = [self extractUserFromResult:result];
+                [self handleSignInForUser:user error:error];
+            };
+
+            void (^completionCopy)(id, NSError *) = [completionBlock copy];
+            ((void (*)(id, SEL, void (^)(id, NSError *)))[signIn methodForSelector:restoreSelector])(signIn, restoreSelector, completionCopy);
+        } else {
+            [signIn restorePreviousSignIn];
+        }
+        return;
+    }
+
+    SEL hintSelector = NSSelectorFromString(@"signInWithConfiguration:presentingViewController:hint:completion:");
+    SEL completionSelector = NSSelectorFromString(@"signInWithConfiguration:presentingViewController:completion:");
+    SEL callbackSelector = NSSelectorFromString(@"signInWithConfiguration:presentingViewController:callback:");
+
+    id configuration = [self configurationForSignIn:signIn];
+    if (!configuration) {
+        configuration = self.currentSignInConfiguration;
+    }
+    UIViewController *presentingController = self.viewController;
+
+    void (^completionBlock)(id, NSError *) = ^(id result, NSError *error) {
+        GIDGoogleUser *user = [self extractUserFromResult:result];
+        [self handleSignInForUser:user error:error];
+    };
+
+    void (^completionCopy)(id, NSError *) = [completionBlock copy];
+
+    if (configuration && [signIn respondsToSelector:hintSelector]) {
+        ((void (*)(id, SEL, id, UIViewController *, NSString *, void (^)(id, NSError *)))[signIn methodForSelector:hintSelector])(signIn, hintSelector, configuration, presentingController, loginHint, completionCopy);
+        return;
+    }
+
+    if (configuration && [signIn respondsToSelector:completionSelector]) {
+        ((void (*)(id, SEL, id, UIViewController *, void (^)(id, NSError *)))[signIn methodForSelector:completionSelector])(signIn, completionSelector, configuration, presentingController, completionCopy);
+        return;
+    }
+
+    if (configuration && [signIn respondsToSelector:callbackSelector]) {
+        ((void (*)(id, SEL, id, UIViewController *, void (^)(id, NSError *)))[signIn methodForSelector:callbackSelector])(signIn, callbackSelector, configuration, presentingController, completionCopy);
+        return;
+    }
+
+    [signIn signIn];
+}
+
+- (void)updateConfigurationWithSignIn:(GIDSignIn *)signIn clientId:(NSString *)clientId serverClientId:(NSString *)serverClientId hostedDomain:(NSString *)hostedDomain {
+    Class configurationClass = NSClassFromString(@"GIDConfiguration");
+    if (!configurationClass) {
+        self.currentSignInConfiguration = nil;
+        return;
+    }
+
+    id configuration = [configurationClass alloc];
+
+    SEL initWithClientIDServerSelector = NSSelectorFromString(@"initWithClientID:serverClientID:");
+    SEL initWithClientIDSelector = NSSelectorFromString(@"initWithClientID:");
+
+    if (serverClientId != nil && [configuration respondsToSelector:initWithClientIDServerSelector]) {
+        configuration = ((id (*)(id, SEL, NSString *, NSString *))objc_msgSend)(configuration, initWithClientIDServerSelector, clientId, serverClientId);
+    } else if ([configuration respondsToSelector:initWithClientIDSelector]) {
+        configuration = ((id (*)(id, SEL, NSString *))objc_msgSend)(configuration, initWithClientIDSelector, clientId);
+    } else {
+        configuration = nil;
+    }
+
+    if (!configuration) {
+        self.currentSignInConfiguration = nil;
+        return;
+    }
+
+    SEL setHostedDomainSelector = NSSelectorFromString(@"setHostedDomain:");
+    if (hostedDomain != nil && [configuration respondsToSelector:setHostedDomainSelector]) {
+        ((void (*)(id, SEL, NSString *))objc_msgSend)(configuration, setHostedDomainSelector, hostedDomain);
+    }
+
+    SEL setConfigurationSelector = NSSelectorFromString(@"setConfiguration:");
+    if ([signIn respondsToSelector:setConfigurationSelector]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(signIn, setConfigurationSelector, configuration);
+    }
+
+    self.currentSignInConfiguration = configuration;
+}
+
+- (id)configurationForSignIn:(GIDSignIn *)signIn {
+    SEL configurationSelector = NSSelectorFromString(@"configuration");
+    if ([signIn respondsToSelector:configurationSelector]) {
+        return ((id (*)(id, SEL))objc_msgSend)(signIn, configurationSelector);
+    }
+    return nil;
+}
+
+- (GIDGoogleUser *)extractUserFromResult:(id)result {
+    if (!result) {
+        return nil;
+    }
+
+    if ([result isKindOfClass:[GIDGoogleUser class]]) {
+        return (GIDGoogleUser *)result;
+    }
+
+    SEL userSelector = NSSelectorFromString(@"user");
+    if ([result respondsToSelector:userSelector]) {
+        return ((GIDGoogleUser * (*)(id, SEL))objc_msgSend)(result, userSelector);
+    }
+
+    return nil;
+}
+
+- (void)handleSignInForUser:(GIDGoogleUser *)user error:(NSError *)error {
+    if (error) {
+        CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:error.localizedDescription];
+        [self.commandDelegate sendPluginResult:pluginResult callbackId:_callbackId];
+        self.isSigningIn = NO;
+        return;
+    }
+
+    if (!user) {
+        CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"No user returned from Google Sign-In."];
+        [self.commandDelegate sendPluginResult:pluginResult callbackId:_callbackId];
+        self.isSigningIn = NO;
+        return;
+    }
+
+    NSString *email = user.profile.email;
+    NSString *idToken = [self tokenStringFromUser:user selectorName:@"idToken"];
+    NSString *accessToken = [self tokenStringFromUser:user selectorName:@"accessToken"];
+    NSString *refreshToken = [self tokenStringFromUser:user selectorName:@"refreshToken"];
+    NSString *userId = user.userID;
+    NSString *serverAuthCode = user.serverAuthCode != nil ? user.serverAuthCode : @"";
+    NSURL *imageUrl = [user.profile imageURLWithDimension:120];
+
+    NSDictionary *result = @{
+        @"email" : email ? : [NSNull null],
+        @"idToken" : idToken ? : [NSNull null],
+        @"serverAuthCode" : serverAuthCode ? : [NSNull null],
+        @"accessToken" : accessToken ? : [NSNull null],
+        @"refreshToken" : refreshToken ? : [NSNull null],
+        @"userId" : userId ? : [NSNull null],
+        @"displayName" : user.profile.name ? : [NSNull null],
+        @"givenName" : user.profile.givenName ? : [NSNull null],
+        @"familyName" : user.profile.familyName ? : [NSNull null],
+        @"imageUrl" : imageUrl ? imageUrl.absoluteString : [NSNull null]
+    };
+
+    CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:result];
+    [self.commandDelegate sendPluginResult:pluginResult callbackId:_callbackId];
+    self.isSigningIn = NO;
+}
+
+- (NSString *)tokenStringFromUser:(GIDGoogleUser *)user selectorName:(NSString *)selectorName {
+    if (!user) {
+        return nil;
+    }
+
+    SEL directSelector = NSSelectorFromString(selectorName);
+    SEL tokenStringSelector = NSSelectorFromString(@"tokenString");
+
+    if ([user respondsToSelector:directSelector]) {
+        id tokenObject = ((id (*)(id, SEL))objc_msgSend)(user, directSelector);
+        if ([tokenObject isKindOfClass:[NSString class]]) {
+            return (NSString *)tokenObject;
+        }
+        if ([tokenObject respondsToSelector:tokenStringSelector]) {
+            id tokenString = ((id (*)(id, SEL))objc_msgSend)(tokenObject, tokenStringSelector);
+            if ([tokenString isKindOfClass:[NSString class]]) {
+                return (NSString *)tokenString;
+            }
+        }
+    }
+
+    SEL authenticationSelector = NSSelectorFromString(@"authentication");
+    if ([user respondsToSelector:authenticationSelector]) {
+        id authentication = ((id (*)(id, SEL))objc_msgSend)(user, authenticationSelector);
+        if ([authentication respondsToSelector:directSelector]) {
+            id tokenObject = ((id (*)(id, SEL))objc_msgSend)(authentication, directSelector);
+            if ([tokenObject isKindOfClass:[NSString class]]) {
+                return (NSString *)tokenObject;
+            }
+        }
+    }
+
+    return nil;
 }
 
 @end
