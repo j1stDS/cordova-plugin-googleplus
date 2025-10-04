@@ -57,7 +57,7 @@
 
     GIDSignIn *signIn = GIDSignIn.sharedInstance;
 
-    [signIn signInWithConfiguration:config presentingViewController:self.viewController callback:^(GIDGoogleUser * _Nullable user, NSError * _Nullable error) {
+    [signIn signInWithConfiguration:config presentingViewController:self.viewController completion:^(GIDGoogleUser * _Nullable user, NSError * _Nullable error) {
         if (error) {
             CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:error.localizedDescription];
             [self.commandDelegate sendPluginResult:pluginResult callbackId:self->_callbackId];
@@ -113,7 +113,7 @@
 }
 
 - (void) disconnect:(CDVInvokedUrlCommand*)command {
-    [GIDSignIn.sharedInstance disconnectWithCallback:^(NSError * _Nullable error) {
+    [GIDSignIn.sharedInstance disconnectWithCompletion:^(NSError * _Nullable error) {
         if(error == nil) {
             CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsString:@"disconnected"];
             [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
