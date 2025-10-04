@@ -1,5 +1,6 @@
 #import <Cordova/CDVPlugin.h>
 #import <GoogleSignIn/GoogleSignIn.h>
+#import <GoogleSignIn/GIDAuthentication.h>
 
 @interface GooglePlus : CDVPlugin
 
