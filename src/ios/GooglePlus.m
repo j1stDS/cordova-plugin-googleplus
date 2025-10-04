@@ -2,10 +2,6 @@
 #import "objc/runtime.h"
 #import "GooglePlus.h"
 
-#if __has_include(<GoogleSignIn/GIDSignInResult.h>)
-#import <GoogleSignIn/GIDSignInResult.h>
-#endif
-
 @implementation GooglePlus
 
 - (void)pluginInitialize
@@ -69,14 +65,46 @@
 
     NSString *idToken = nil;
 
-#if __has_include(<GoogleSignIn/GIDSignInResult.h>)
-    if ([user respondsToSelector:@selector(idToken)]) {
-        idToken = user.idToken.tokenString;
-    }
-#endif
+    SEL idTokenSelector = NSSelectorFromString(@"idToken");
+    if ([user respondsToSelector:idTokenSelector]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+        id tokenObject = [user performSelector:idTokenSelector];
+#pragma clang diagnostic pop
 
-    if (idToken == nil && [user respondsToSelector:@selector(authentication)]) {
-        idToken = user.authentication.idToken;
+        SEL tokenStringSelector = NSSelectorFromString(@"tokenString");
+        if ([tokenObject respondsToSelector:tokenStringSelector]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            id tokenString = [tokenObject performSelector:tokenStringSelector];
+#pragma clang diagnostic pop
+            if ([tokenString isKindOfClass:[NSString class]]) {
+                idToken = (NSString *)tokenString;
+            }
+        } else if ([tokenObject isKindOfClass:[NSString class]]) {
+            idToken = (NSString *)tokenObject;
+        }
+    }
+
+    if (idToken == nil) {
+        SEL authenticationSelector = NSSelectorFromString(@"authentication");
+        if ([user respondsToSelector:authenticationSelector]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            id authentication = [user performSelector:authenticationSelector];
+#pragma clang diagnostic pop
+
+            SEL legacyTokenSelector = NSSelectorFromString(@"idToken");
+            if ([authentication respondsToSelector:legacyTokenSelector]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                id legacyToken = [authentication performSelector:legacyTokenSelector];
+#pragma clang diagnostic pop
+                if ([legacyToken isKindOfClass:[NSString class]]) {
+                    idToken = (NSString *)legacyToken;
+                }
+            }
+        }
     }
 
     NSDictionary *result = [self dictionaryForUser:user idToken:idToken];
@@ -111,15 +139,33 @@
 
     GIDSignIn *signIn = GIDSignIn.sharedInstance;
 
-#if __has_include(<GoogleSignIn/GIDSignInResult.h>)
-    [signIn signInWithConfiguration:config presentingViewController:self.viewController completion:^(GIDSignInResult * _Nullable signInResult, NSError * _Nullable error) {
-        [self sendPluginResultWithUser:signInResult.user error:error];
-    }];
-#else
-    [signIn signInWithConfiguration:config presentingViewController:self.viewController callback:^(GIDGoogleUser * _Nullable user, NSError * _Nullable error) {
-        [self sendPluginResultWithUser:user error:error];
-    }];
-#endif
+    SEL modernSignInSelector = NSSelectorFromString(@"signInWithConfiguration:presentingViewController:completion:");
+    if ([signIn respondsToSelector:modernSignInSelector]) {
+        void (^completion)(id _Nullable, NSError * _Nullable) = ^(id _Nullable signInResult, NSError * _Nullable error) {
+            GIDGoogleUser *user = nil;
+            if ([signInResult respondsToSelector:@selector(user)]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                id possibleUser = [signInResult performSelector:@selector(user)];
+#pragma clang diagnostic pop
+                if ([possibleUser isKindOfClass:[GIDGoogleUser class]]) {
+                    user = (GIDGoogleUser *)possibleUser;
+                }
+            } else if ([signInResult isKindOfClass:[GIDGoogleUser class]]) {
+                user = (GIDGoogleUser *)signInResult;
+            }
+
+            [self sendPluginResultWithUser:user error:error];
+        };
+
+        typedef void (*SignInWithCompletionType)(id, SEL, GIDConfiguration *, UIViewController *, void (^)(id _Nullable, NSError * _Nullable));
+        SignInWithCompletionType implementation = (SignInWithCompletionType)[signIn methodForSelector:modernSignInSelector];
+        implementation(signIn, modernSignInSelector, config, self.viewController, completion);
+    } else {
+        [signIn signInWithConfiguration:config presentingViewController:self.viewController callback:^(GIDGoogleUser * _Nullable user, NSError * _Nullable error) {
+            [self sendPluginResultWithUser:user error:error];
+        }];
+    }
 }
 
 
@@ -154,15 +200,30 @@
 }
 
 - (void) disconnect:(CDVInvokedUrlCommand*)command {
-    [GIDSignIn.sharedInstance disconnectWithCallback:^(NSError * _Nullable error) {
-        if(error == nil) {
+    GIDSignIn *signIn = GIDSignIn.sharedInstance;
+
+    void (^handleResult)(NSError * _Nullable) = ^(NSError * _Nullable error) {
+        if (error == nil) {
             CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsString:@"disconnected"];
             [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
         } else {
             CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:[error localizedDescription]];
             [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
         }
-    }];
+    };
+
+    SEL modernDisconnectSelector = NSSelectorFromString(@"disconnectWithCompletion:");
+    if ([signIn respondsToSelector:modernDisconnectSelector]) {
+        typedef void (*DisconnectWithCompletionType)(id, SEL, void (^ _Nullable)(NSError * _Nullable));
+        DisconnectWithCompletionType implementation = (DisconnectWithCompletionType)[signIn methodForSelector:modernDisconnectSelector];
+        implementation(signIn, modernDisconnectSelector, ^(NSError * _Nullable error) {
+            handleResult(error);
+        });
+    } else {
+        [signIn disconnectWithCallback:^(NSError * _Nullable error) {
+            handleResult(error);
+        }];
+    }
 }
 
 - (void) isSignedIn:(CDVInvokedUrlCommand*)command {
