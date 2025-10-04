@@ -162,9 +162,17 @@
         SignInWithCompletionType implementation = (SignInWithCompletionType)[signIn methodForSelector:modernSignInSelector];
         implementation(signIn, modernSignInSelector, config, self.viewController, completion);
     } else {
-        [signIn signInWithConfiguration:config presentingViewController:self.viewController callback:^(GIDGoogleUser * _Nullable user, NSError * _Nullable error) {
-            [self sendPluginResultWithUser:user error:error];
-        }];
+        SEL legacySignInSelector = NSSelectorFromString(@"signInWithConfiguration:presentingViewController:callback:");
+        if ([signIn respondsToSelector:legacySignInSelector]) {
+            typedef void (*SignInWithCallbackType)(id, SEL, GIDConfiguration *, UIViewController *, void (^)(GIDGoogleUser * _Nullable, NSError * _Nullable));
+            SignInWithCallbackType implementation = (SignInWithCallbackType)[signIn methodForSelector:legacySignInSelector];
+            implementation(signIn, legacySignInSelector, config, self.viewController, ^(GIDGoogleUser * _Nullable user, NSError * _Nullable error) {
+                [self sendPluginResultWithUser:user error:error];
+            });
+        } else {
+            NSError *unsupportedError = [NSError errorWithDomain:@"GooglePlus" code:-1 userInfo:@{NSLocalizedDescriptionKey: @"Google Sign-In API unsupported on this version."}];
+            [self sendPluginResultWithUser:nil error:unsupportedError];
+        }
     }
 }
 
@@ -220,9 +228,22 @@
             handleResult(error);
         });
     } else {
-        [signIn disconnectWithCallback:^(NSError * _Nullable error) {
-            handleResult(error);
-        }];
+        SEL legacyDisconnectSelector = NSSelectorFromString(@"disconnectWithCallback:");
+        if ([signIn respondsToSelector:legacyDisconnectSelector]) {
+            typedef void (*DisconnectWithCallbackType)(id, SEL, void (^ _Nullable)(NSError * _Nullable));
+            DisconnectWithCallbackType implementation = (DisconnectWithCallbackType)[signIn methodForSelector:legacyDisconnectSelector];
+            implementation(signIn, legacyDisconnectSelector, ^(NSError * _Nullable error) {
+                handleResult(error);
+            });
+        } else if ([signIn respondsToSelector:@selector(disconnect)]) {
+            typedef void (*DisconnectVoidType)(id, SEL);
+            DisconnectVoidType implementation = (DisconnectVoidType)[signIn methodForSelector:@selector(disconnect)];
+            implementation(signIn, @selector(disconnect));
+            handleResult(nil);
+        } else {
+            NSError *unsupportedError = [NSError errorWithDomain:@"GooglePlus" code:-1 userInfo:@{NSLocalizedDescriptionKey: @"Disconnect API unsupported on this version."}];
+            handleResult(unsupportedError);
+        }
     }
 }
 
